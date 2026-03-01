@@ -283,17 +283,17 @@ def _record_oneshot(service: STTService, overlay: Overlay, stop_event: threading
                     service.recorder.stop()
                 except Exception:  # noqa: BLE001
                     pass
-                overlay.show("Recording cancelled.", sticky=False)
+                overlay.show(kind="cancelled", sticky=False)
                 return None, True
 
             elapsed = time.time() - start
-            level = service.recorder.level
-            overlay.show("Recording... Press hotkey again to stop, Esc to cancel.", level=level, sticky=True)
+            bars = service.recorder.waveform_bars(bars=56)
+            overlay.show(kind="recording", sticky=True, bars=bars)
 
             if stop_event.is_set() or elapsed >= service.config.max_record_seconds:
                 break
 
-            time.sleep(0.08)
+            time.sleep(0.05)
 
         recording = service.recorder.stop()
         return recording, False
@@ -317,6 +317,8 @@ def cmd_oneshot(_args: argparse.Namespace) -> int:
 
     old_handler = signal.signal(signal.SIGUSR1, on_stop_signal)
 
+    overlay: Overlay | None = None
+
     try:
         ONESHOT_PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
         config = load_config()
@@ -329,12 +331,17 @@ def cmd_oneshot(_args: argparse.Namespace) -> int:
         if cancelled or recording is None:
             return 0
 
-        overlay.show("Transcribing...", sticky=True)
+        overlay.show(kind="transcribing", sticky=True)
         result = service.transcribe_bytes(recording.data, duration_seconds=recording.duration_seconds)
         service.insert_text(result.text)
-        overlay.show("Done.", sticky=False)
+        overlay.show(kind="done", sticky=False)
         return 0
     except Exception as exc:  # noqa: BLE001
+        if overlay is not None:
+            try:
+                overlay.show(kind="error", sticky=False)
+            except Exception:  # noqa: BLE001
+                pass
         print(f"oneshot failed: {exc}", file=sys.stderr)
         return 1
     finally:
