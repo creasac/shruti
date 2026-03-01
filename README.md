@@ -19,7 +19,7 @@ Hotkey behavior after setup:
 - Press hotkey again: stop and transcribe
 - Press `Esc`: cancel current recording
 
-No background daemon runs while idle.
+Nothing runs in background while idle.
 
 ## Configuration
 
@@ -27,6 +27,22 @@ Files:
 
 - `~/.config/shruti/config.toml`
 - `~/.config/shruti/credentials.toml`
+
+API key location:
+
+- Stored only in `~/.config/shruti/credentials.toml`
+
+To remove your key:
+
+```bash
+rm -f ~/.config/shruti/credentials.toml
+```
+
+To remove all Shruti config data:
+
+```bash
+rm -rf ~/.config/shruti
+```
 
 Editable config fields:
 

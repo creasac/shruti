@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import os
+import stat
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None  # type: ignore[assignment]
 
 
 CONFIG_DIR = Path.home() / ".config" / "shruti"
@@ -70,8 +67,6 @@ class AppConfig:
 def _parse_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    if tomllib is None:
-        raise RuntimeError("Python 3.11+ is required for tomllib support.")
     with path.open("rb") as f:
         data = tomllib.load(f)
     return data if isinstance(data, dict) else {}
@@ -80,6 +75,17 @@ def _parse_toml(path: Path) -> dict[str, Any]:
 def _toml_string(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _ensure_credentials_permissions() -> None:
+    if not CREDENTIALS_PATH.exists():
+        return
+    mode = stat.S_IMODE(CREDENTIALS_PATH.stat().st_mode)
+    if mode & 0o077:
+        raise RuntimeError(
+            f"Insecure permissions on {CREDENTIALS_PATH} ({oct(mode)}). "
+            f"Run: chmod 600 {CREDENTIALS_PATH}"
+        )
 
 
 def normalize_hotkey(hotkey: str) -> str:
@@ -175,6 +181,7 @@ def save_config(config: AppConfig) -> None:
 
 def load_stored_api_key() -> str:
     ensure_config_files()
+    _ensure_credentials_permissions()
     raw = _parse_toml(CREDENTIALS_PATH)
     return str(raw.get("api_key", "")).strip()
 
@@ -197,15 +204,8 @@ def save_api_key(api_key: str) -> None:
 
 
 def load_api_key() -> str:
-    env_key = os.getenv("GEMINI_API_KEY")
-    if env_key:
-        return env_key.strip()
-
     file_key = load_stored_api_key()
     if file_key:
         return file_key
 
-    raise RuntimeError(
-        "Missing Gemini API key. Set GEMINI_API_KEY or add api_key to "
-        f"{CREDENTIALS_PATH}."
-    )
+    raise RuntimeError(f"Missing Gemini API key in {CREDENTIALS_PATH}.")

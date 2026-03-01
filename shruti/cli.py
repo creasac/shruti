@@ -32,10 +32,6 @@ if TYPE_CHECKING:
     from .service import STTService
 
 
-SERVICE_DIR = Path.home() / ".config" / "systemd" / "user"
-SERVICE_PATH = SERVICE_DIR / "shruti.service"
-DESKTOP_AUTOSTART_DIR = Path.home() / ".config" / "autostart"
-DESKTOP_AUTOSTART_PATH = DESKTOP_AUTOSTART_DIR / "shruti.desktop"
 ONESHOT_LOCK_PATH = Path("/tmp/shruti-oneshot.lock")
 ONESHOT_PID_PATH = Path("/tmp/shruti-oneshot.pid")
 
@@ -48,7 +44,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="shruti", description="Minimal desktop speech-to-text utility.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="Create default config and credentials files.")
     sub.add_parser("setup", help="Interactive setup for API key and global shortcut trigger.")
 
     doctor = sub.add_parser("doctor", help="Check local setup and dependencies.")
@@ -58,14 +53,6 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("oneshot", help="One-shot run triggered by global shortcut.")
 
     return parser
-
-
-def cmd_init() -> int:
-    ensure_config_files()
-    print(f"Config created: {CONFIG_PATH}")
-    print(f"Credentials template: {CREDENTIALS_PATH}")
-    print("Run 'shruti setup' to configure API key and global shortcut.")
-    return 0
 
 
 def _record_interactive(service: STTService) -> RecordingResult:
@@ -134,30 +121,6 @@ def _prompt_api_key(existing_key: str) -> str:
         if existing_key:
             return existing_key
         print("API key is required.")
-
-
-def _disable_background_daemon() -> None:
-    try:
-        subprocess.run(["systemctl", "--user", "disable", "--now", "shruti.service"], check=False)
-    except FileNotFoundError:
-        pass
-
-    try:
-        if SERVICE_PATH.exists():
-            SERVICE_PATH.unlink()
-    except OSError:
-        pass
-
-    try:
-        if DESKTOP_AUTOSTART_PATH.exists():
-            DESKTOP_AUTOSTART_PATH.unlink()
-    except OSError:
-        pass
-
-    try:
-        subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "shruti daemon"], check=False)
-    except FileNotFoundError:
-        pass
 
 
 def _hotkey_to_gnome_accelerator(hotkey: str) -> str:
@@ -238,7 +201,7 @@ def cmd_setup(_args: argparse.Namespace) -> int:
     print("shruti setup")
     print("- Esc always cancels recording")
     print(f"- Max recording length is {current.max_record_seconds} seconds")
-    print("- No background daemon runs while idle")
+    print("- Nothing runs in background while idle")
 
     api_key = _prompt_api_key(existing_key)
     hotkey = _prompt_hotkey(current.hotkey)
@@ -254,7 +217,6 @@ def cmd_setup(_args: argparse.Namespace) -> int:
     save_config(updated)
     save_api_key(api_key)
 
-    _disable_background_daemon()
     ok, msg = _configure_hotkey_trigger(Path(sys.argv[0]).resolve(), updated.hotkey)
 
     print("\nSetup complete.")
@@ -403,8 +365,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     ensure_config_files()
     print(f"Config path: {CONFIG_PATH}")
     print(f"Credentials path: {CREDENTIALS_PATH}")
-    print(f"DISPLAY={_safe_env('DISPLAY')}")
-    print(f"XDG_SESSION_TYPE={_safe_env('XDG_SESSION_TYPE')}")
+    print(f"DISPLAY={os.getenv('DISPLAY', '')}")
+    print(f"XDG_SESSION_TYPE={os.getenv('XDG_SESSION_TYPE', '')}")
 
     missing: list[str] = []
     try:
@@ -440,19 +402,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("Doctor check passed.")
     return 0
 
-
-def _safe_env(name: str) -> str:
-    return os.getenv(name, "")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     signal.signal(signal.SIGINT, signal.default_int_handler)
 
-    if args.command == "init":
-        return cmd_init()
     if args.command == "setup":
         return cmd_setup(args)
     if args.command == "doctor":
