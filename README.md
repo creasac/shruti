@@ -2,35 +2,24 @@
 
 Minimal desktop speech-to-text using Gemini.
 
-## One-line install
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/creasac/shruti/main/bootstrap.sh | bash
 ```
 
-What setup asks during install:
+What setup asks:
 
 - Gemini API key (hidden input)
 - Preferred hotkey (default `Ctrl+Space`)
-- Whether to autostart the daemon at login
 
-During hotkey setup, you are asked to press the chosen key combo once.
-If it is not detected, it likely conflicts with another global shortcut.
+Hotkey behavior after setup:
 
-## Alternate install
+- Press hotkey once: start recording
+- Press hotkey again: stop and transcribe
+- Press `Esc`: cancel current recording
 
-```bash
-git clone https://github.com/creasac/shruti.git
-cd shruti
-./install.sh
-```
-
-## Runtime behavior
-
-- Hotkey press: start recording
-- Hotkey press again: stop recording and transcribe
-- `Esc`: cancel current recording
-- Recording auto-stops after `max_record_seconds` (default: `300`)
+No background daemon runs while idle.
 
 ## Configuration
 
@@ -53,13 +42,12 @@ Editable config fields:
 ```bash
 shruti setup
 shruti doctor --verbose
-shruti daemon
-shruti transcribe
+shruti oneshot
 ```
 
 ## Limitations
 
-- Linux X11 only
+- Linux X11 only (Wayland blocks unrestricted global hotkey/input injection for security)
 
 ## License
 

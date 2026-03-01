@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import getpass
+import os
+import re
 import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,11 +27,21 @@ from .config import (
 )
 
 if TYPE_CHECKING:
+    from .audio import RecordingResult
+    from .overlay import Overlay
     from .service import STTService
 
 
 SERVICE_DIR = Path.home() / ".config" / "systemd" / "user"
 SERVICE_PATH = SERVICE_DIR / "shruti.service"
+DESKTOP_AUTOSTART_DIR = Path.home() / ".config" / "autostart"
+DESKTOP_AUTOSTART_PATH = DESKTOP_AUTOSTART_DIR / "shruti.desktop"
+ONESHOT_LOCK_PATH = Path("/tmp/shruti-oneshot.lock")
+ONESHOT_PID_PATH = Path("/tmp/shruti-oneshot.pid")
+
+GNOME_SCHEMA = "org.gnome.settings-daemon.plugins.media-keys"
+GNOME_BINDING_BASE = "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/"
+GNOME_BINDING_PATH = f"{GNOME_BINDING_BASE}shruti/"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -35,17 +49,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="Create default config and credentials files.")
-    sub.add_parser("setup", help="Interactive setup for API key, hotkey, and autostart.")
+    sub.add_parser("setup", help="Interactive setup for API key and global shortcut trigger.")
 
     doctor = sub.add_parser("doctor", help="Check local setup and dependencies.")
     doctor.add_argument("--verbose", action="store_true", help="Print extra diagnostics.")
 
-    sub.add_parser(
-        "transcribe",
-        help="Record from microphone and print transcript.",
-    )
-
-    sub.add_parser("daemon", help="Run hotkey daemon for toggle recording and text insertion.")
+    sub.add_parser("transcribe", help="Record from microphone and print transcript.")
+    sub.add_parser("oneshot", help="One-shot run triggered by global shortcut.")
 
     return parser
 
@@ -54,11 +64,11 @@ def cmd_init() -> int:
     ensure_config_files()
     print(f"Config created: {CONFIG_PATH}")
     print(f"Credentials template: {CREDENTIALS_PATH}")
-    print("Run 'shruti setup' to configure API key, hotkey, and autostart.")
+    print("Run 'shruti setup' to configure API key and global shortcut.")
     return 0
 
 
-def _record_interactive(service: STTService):
+def _record_interactive(service: STTService) -> RecordingResult:
     service.recorder.start()
     print("Recording... press Enter to stop.")
     try:
@@ -66,19 +76,6 @@ def _record_interactive(service: STTService):
     except KeyboardInterrupt:
         pass
     return service.recorder.stop()
-
-
-def _prompt_yes_no(prompt: str, default: bool) -> bool:
-    suffix = "[Y/n]" if default else "[y/N]"
-    while True:
-        answer = input(f"{prompt} {suffix}: ").strip().lower()
-        if not answer:
-            return default
-        if answer in {"y", "yes"}:
-            return True
-        if answer in {"n", "no"}:
-            return False
-        print("Please answer y or n.")
 
 
 def _hotkey_is_valid(hotkey: str) -> bool:
@@ -105,7 +102,7 @@ def _hotkey_detectable(hotkey: str, timeout_seconds: float = 6.0) -> bool:
 
 
 def _prompt_hotkey(current_hotkey: str) -> str:
-    print("Set the recording toggle hotkey.")
+    print("Set the recording trigger hotkey.")
     print("Examples: <ctrl>+<space>, <ctrl>+<alt>+h")
     while True:
         raw = input(f"Hotkey [{current_hotkey}]: ").strip()
@@ -118,13 +115,11 @@ def _prompt_hotkey(current_hotkey: str) -> str:
         try:
             if _hotkey_detectable(chosen):
                 return chosen
-            print("That hotkey was not detected. It may conflict with a system/global shortcut.")
-            if _prompt_yes_no("Use it anyway", default=False):
-                return chosen
+            print("That hotkey was not detected. It may conflict with another global shortcut.")
+            print("Choose a different hotkey.")
         except Exception as exc:  # noqa: BLE001
-            print(f"Hotkey verification failed: {exc}")
-            if _prompt_yes_no("Use this hotkey anyway", default=True):
-                return chosen
+            print(f"Hotkey verification failed ({exc}). Keeping selected hotkey.")
+            return chosen
 
 
 def _prompt_api_key(existing_key: str) -> str:
@@ -141,39 +136,98 @@ def _prompt_api_key(existing_key: str) -> str:
         print("API key is required.")
 
 
-def _write_service_file(shruti_exe: Path) -> Path:
-    SERVICE_DIR.mkdir(parents=True, exist_ok=True)
-    service_body = "\n".join(
-        [
-            "[Unit]",
-            "Description=Shruti speech-to-text daemon",
-            "After=graphical-session.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            f"ExecStart={shruti_exe} daemon",
-            "Restart=on-failure",
-            "RestartSec=2",
-            "",
-            "[Install]",
-            "WantedBy=default.target",
-            "",
-        ]
-    )
-    SERVICE_PATH.write_text(service_body, encoding="utf-8")
-    return SERVICE_PATH
-
-
-def _enable_autostart(shruti_exe: Path) -> tuple[bool, str]:
-    service_file = _write_service_file(shruti_exe)
+def _disable_background_daemon() -> None:
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-        subprocess.run(["systemctl", "--user", "enable", "--now", "shruti.service"], check=True)
-        return True, f"Autostart enabled via {service_file}"
+        subprocess.run(["systemctl", "--user", "disable", "--now", "shruti.service"], check=False)
     except FileNotFoundError:
-        return False, f"systemctl not found; service file written to {service_file}"
+        pass
+
+    try:
+        if SERVICE_PATH.exists():
+            SERVICE_PATH.unlink()
+    except OSError:
+        pass
+
+    try:
+        if DESKTOP_AUTOSTART_PATH.exists():
+            DESKTOP_AUTOSTART_PATH.unlink()
+    except OSError:
+        pass
+
+    try:
+        subprocess.run(["pkill", "-u", str(os.getuid()), "-f", "shruti daemon"], check=False)
+    except FileNotFoundError:
+        pass
+
+
+def _hotkey_to_gnome_accelerator(hotkey: str) -> str:
+    tokens = [token.strip() for token in hotkey.split("+") if token.strip()]
+    modifiers: list[str] = []
+    key = ""
+
+    for token in tokens:
+        lower = token.strip("<>").lower()
+        if lower in {"ctrl", "control"}:
+            modifiers.append("<Control>")
+        elif lower == "shift":
+            modifiers.append("<Shift>")
+        elif lower == "alt":
+            modifiers.append("<Alt>")
+        elif lower in {"super", "windows", "cmd"}:
+            modifiers.append("<Super>")
+        else:
+            key = "space" if lower == "space" else lower
+
+    if not key:
+        raise RuntimeError(f"Hotkey '{hotkey}' does not include a final key.")
+    return "".join(modifiers) + key
+
+
+def _gsettings_get_custom_bindings() -> list[str]:
+    proc = subprocess.run(
+        ["gsettings", "get", GNOME_SCHEMA, "custom-keybindings"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    out = proc.stdout.strip()
+    return re.findall(r"'([^']+)'", out)
+
+
+def _gsettings_set_string(schema: str, key: str, value: str) -> None:
+    subprocess.run(["gsettings", "set", schema, key, repr(value)], check=True)
+
+
+def _configure_gnome_hotkey(shruti_exe: Path, hotkey: str) -> tuple[bool, str]:
+    accel = _hotkey_to_gnome_accelerator(hotkey)
+    cmd = f"{shruti_exe} oneshot"
+
+    bindings = _gsettings_get_custom_bindings()
+    if GNOME_BINDING_PATH not in bindings:
+        bindings.append(GNOME_BINDING_PATH)
+        list_value = "[" + ", ".join(repr(b) for b in bindings) + "]"
+        subprocess.run(["gsettings", "set", GNOME_SCHEMA, "custom-keybindings", list_value], check=True)
+
+    schema = f"org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:{GNOME_BINDING_PATH}"
+    _gsettings_set_string(schema, "name", "shruti")
+    _gsettings_set_string(schema, "command", cmd)
+    _gsettings_set_string(schema, "binding", accel)
+
+    return True, f"Configured GNOME shortcut {accel} -> {cmd}"
+
+
+def _configure_hotkey_trigger(shruti_exe: Path, hotkey: str) -> tuple[bool, str]:
+    try:
+        return _configure_gnome_hotkey(shruti_exe, hotkey)
+    except FileNotFoundError:
+        return False, f"gsettings not found. Configure a system shortcut manually to run: {shruti_exe} oneshot"
     except subprocess.CalledProcessError as exc:
-        return False, f"Could not enable autostart automatically ({exc}); service file written to {service_file}"
+        return False, (
+            "Could not configure GNOME shortcut automatically. "
+            f"Configure a system shortcut manually to run: {shruti_exe} oneshot (error: {exc})"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Could not configure system shortcut automatically: {exc}"
 
 
 def cmd_setup(_args: argparse.Namespace) -> int:
@@ -184,6 +238,7 @@ def cmd_setup(_args: argparse.Namespace) -> int:
     print("shruti setup")
     print("- Esc always cancels recording")
     print(f"- Max recording length is {current.max_record_seconds} seconds")
+    print("- No background daemon runs while idle")
 
     api_key = _prompt_api_key(existing_key)
     hotkey = _prompt_hotkey(current.hotkey)
@@ -199,23 +254,135 @@ def cmd_setup(_args: argparse.Namespace) -> int:
     save_config(updated)
     save_api_key(api_key)
 
-    autostart_enabled = False
-    autostart_msg = "Autostart not configured"
-    if _prompt_yes_no("Enable daemon autostart at login", default=True):
-        autostart_enabled, autostart_msg = _enable_autostart(Path(sys.argv[0]).resolve())
+    _disable_background_daemon()
+    ok, msg = _configure_hotkey_trigger(Path(sys.argv[0]).resolve(), updated.hotkey)
 
     print("\nSetup complete.")
-    print(f"Hotkey: {updated.hotkey} (start/stop recording)")
+    print(f"Hotkey: {updated.hotkey} (press once to start, again to stop)")
     print("Esc: cancel current recording")
     print(f"Max recording: {updated.max_record_seconds} seconds")
-    print(autostart_msg)
+    print(msg)
 
-    if autostart_enabled:
-        print("Daemon is running now and will start on login.")
-    else:
-        print("Start manually with: shruti daemon")
+    return 0 if ok else 1
 
-    return 0
+
+def _acquire_oneshot_lock() -> int | None:
+    fd = os.open(ONESHOT_LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _release_oneshot_lock(fd: int | None) -> None:
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
+
+
+def _signal_active_oneshot() -> bool:
+    try:
+        pid = int(ONESHOT_PID_PATH.read_text(encoding="utf-8").strip())
+    except Exception:  # noqa: BLE001
+        return False
+
+    try:
+        os.kill(pid, signal.SIGUSR1)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _record_oneshot(service: STTService, overlay: Overlay, stop_event: threading.Event) -> tuple[RecordingResult | None, bool]:
+    from pynput import keyboard
+
+    cancel = threading.Event()
+
+    def on_press(key: keyboard.KeyCode | keyboard.Key | None) -> None:
+        if key == keyboard.Key.esc:
+            cancel.set()
+
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
+    service.recorder.start()
+    start = time.time()
+
+    try:
+        while True:
+            if cancel.is_set():
+                try:
+                    service.recorder.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                overlay.show("Recording cancelled.", sticky=False)
+                return None, True
+
+            elapsed = time.time() - start
+            level = service.recorder.level
+            overlay.show("Recording... Press hotkey again to stop, Esc to cancel.", level=level, sticky=True)
+
+            if stop_event.is_set() or elapsed >= service.config.max_record_seconds:
+                break
+
+            time.sleep(0.08)
+
+        recording = service.recorder.stop()
+        return recording, False
+    finally:
+        listener.stop()
+
+
+def cmd_oneshot(_args: argparse.Namespace) -> int:
+    from .overlay import Overlay
+    from .service import STTService
+
+    lock_fd = _acquire_oneshot_lock()
+    if lock_fd is None:
+        _signal_active_oneshot()
+        return 0
+
+    stop_event = threading.Event()
+
+    def on_stop_signal(_signum: int, _frame: object) -> None:
+        stop_event.set()
+
+    old_handler = signal.signal(signal.SIGUSR1, on_stop_signal)
+
+    try:
+        ONESHOT_PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
+        config = load_config()
+        api_key = load_api_key()
+        service = STTService(config=config, api_key=api_key)
+        overlay = Overlay()
+        overlay.start()
+
+        recording, cancelled = _record_oneshot(service, overlay, stop_event)
+        if cancelled or recording is None:
+            return 0
+
+        overlay.show("Transcribing...", sticky=True)
+        result = service.transcribe_bytes(recording.data, duration_seconds=recording.duration_seconds)
+        service.insert_text(result.text)
+        overlay.show("Done.", sticky=False)
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"oneshot failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        signal.signal(signal.SIGUSR1, old_handler)
+        try:
+            if ONESHOT_PID_PATH.exists():
+                ONESHOT_PID_PATH.unlink()
+        except OSError:
+            pass
+        _release_oneshot_lock(lock_fd)
 
 
 def cmd_transcribe(_args: argparse.Namespace) -> int:
@@ -229,26 +396,6 @@ def cmd_transcribe(_args: argparse.Namespace) -> int:
     result = service.transcribe_bytes(recording.data, duration_seconds=recording.duration_seconds)
 
     print(result.text)
-    return 0
-
-
-def cmd_daemon(_args: argparse.Namespace) -> int:
-    try:
-        from .daemon import DaemonOptions, STTDaemon
-        from .service import STTService
-
-        config = load_config()
-        api_key = load_api_key()
-        service = STTService(config=config, api_key=api_key)
-        daemon = STTDaemon(service=service, options=DaemonOptions(insert_text=True))
-        print(f"shruti daemon running. Hotkey: {config.hotkey}. Ctrl+C to quit.")
-        daemon.start()
-    except KeyboardInterrupt:
-        print("\nshruti daemon stopped.")
-        return 0
-    except Exception as exc:  # noqa: BLE001
-        print(f"Failed to start daemon: {exc}", file=sys.stderr)
-        return 1
     return 0
 
 
@@ -295,8 +442,6 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _safe_env(name: str) -> str:
-    import os
-
     return os.getenv(name, "")
 
 
@@ -314,8 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(args)
     if args.command == "transcribe":
         return cmd_transcribe(args)
-    if args.command == "daemon":
-        return cmd_daemon(args)
+    if args.command == "oneshot":
+        return cmd_oneshot(args)
 
     parser.print_help()
     return 2

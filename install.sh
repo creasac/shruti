@@ -116,15 +116,10 @@ main() {
   if [[ "$RUN_SETUP" == "1" ]]; then
     log "[shruti] Running interactive setup..."
     "$VENV_DIR/bin/shruti" setup
+    echo "[shruti] Install complete."
+  else
+    echo "[shruti] Install complete. Run: $VENV_DIR/bin/shruti setup"
   fi
-
-  cat <<MSG
-[shruti] Install complete.
-
-Useful commands:
-  $VENV_DIR/bin/shruti doctor --verbose
-  $VENV_DIR/bin/shruti daemon
-MSG
 }
 
 main "$@"

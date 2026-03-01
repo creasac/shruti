@@ -1,4 +1,4 @@
-.PHONY: install setup doctor daemon transcribe
+.PHONY: install setup doctor oneshot transcribe
 
 install:
 	./install.sh
@@ -9,8 +9,8 @@ setup:
 doctor:
 	./.venv/bin/shruti doctor --verbose
 
-daemon:
-	./.venv/bin/shruti daemon
+oneshot:
+	./.venv/bin/shruti oneshot
 
 transcribe:
 	./.venv/bin/shruti transcribe
