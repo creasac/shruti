@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shruti"
+version = "0.1.0"
+description = "Minimal X11 speech-to-text utility powered by Gemini"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.24",
+  "pynput>=1.7.6",
+  "requests>=2.31",
+  "sounddevice>=0.4.6",
+]
+
+[project.scripts]
+shruti = "shruti.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["shruti*"]
