@@ -2,6 +2,8 @@
 
 Minimal desktop speech-to-text using Gemini.
 
+<img width="480" height="480" alt="shruti_logo" src="https://github.com/user-attachments/assets/467c90e0-559f-41dd-9fae-9cd9fdf25a17" />
+
 ## Install
 
 ```bash
