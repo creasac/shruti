@@ -2,7 +2,7 @@
 
 Minimal desktop speech-to-text using Gemini.
 
-<img width="480" height="480" alt="shruti_logo" src="https://github.com/user-attachments/assets/467c90e0-559f-41dd-9fae-9cd9fdf25a17" />
+<img width="1254" height="1254" alt="shruti-logo" src="https://github.com/user-attachments/assets/6a7ab1ae-366e-4d8e-a6a3-7681d2344f10" />
 
 ## Install
 
