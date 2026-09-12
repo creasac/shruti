@@ -4,13 +4,13 @@ install:
 	./install.sh
 
 setup:
-	./.venv/bin/shruti setup
+	$(HOME)/.local/bin/shruti setup
 
 doctor:
-	./.venv/bin/shruti doctor --verbose
+	$(HOME)/.local/bin/shruti doctor --verbose
 
 oneshot:
-	./.venv/bin/shruti oneshot
+	$(HOME)/.local/bin/shruti oneshot
 
 transcribe:
-	./.venv/bin/shruti transcribe
+	$(HOME)/.local/bin/shruti transcribe

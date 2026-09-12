@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
+INSTALL_DIR="$HOME/.local/share/shruti"
+VENV_DIR="$INSTALL_DIR/venv"
+BIN_DIR="$HOME/.local/bin"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 SKIP_SYSTEM_PACKAGES="${SKIP_SYSTEM_PACKAGES:-0}"
 RUN_SETUP="${RUN_SETUP:-1}"
@@ -14,7 +16,6 @@ Usage: ./install.sh [options]
 Options:
   --skip-system-packages   Skip apt/dnf/pacman dependency install
   --no-setup               Skip interactive 'shruti setup'
-  --venv-dir PATH          Set virtualenv location (default: ./.venv)
   --python PATH            Python binary to use (default: python3)
   -h, --help               Show this help
 MSG
@@ -39,11 +40,8 @@ parse_args() {
         RUN_SETUP="0"
         shift
         ;;
-      --venv-dir)
-        VENV_DIR="$2"
-        shift 2
-        ;;
       --python)
+        [[ $# -ge 2 && -n "$2" ]] || { log "[shruti] --python requires a path"; exit 1; }
         PYTHON_BIN="$2"
         shift 2
         ;;
@@ -104,21 +102,50 @@ main() {
     exit 1
   fi
 
+  "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Shruti requires Python 3.11 or newer.")'
+
+  if [[ -e "$INSTALL_DIR/.git" || -L "$INSTALL_DIR" ]]; then
+    log "[shruti] $INSTALL_DIR contains a legacy checkout or is a symlink."
+    log "[shruti] Move it aside before installing; your configuration is in ~/.config/shruti."
+    exit 1
+  fi
+  for name in shruti shruti-uninstall; do
+    target="$VENV_DIR/bin/shruti"
+    [[ "$name" != shruti-uninstall ]] || target="$INSTALL_DIR/uninstall.py"
+    if [[ -e "$BIN_DIR/$name" || -L "$BIN_DIR/$name" ]]; then
+      if [[ ! -L "$BIN_DIR/$name" || "$(readlink "$BIN_DIR/$name")" != "$target" ]]; then
+        log "[shruti] Refusing to replace an unrelated command: $BIN_DIR/$name"
+        exit 1
+      fi
+    fi
+  done
+
   install_system_packages
 
   log "[shruti] Creating venv: $VENV_DIR"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 
   log "[shruti] Installing package..."
-  "$VENV_DIR/bin/pip" install --upgrade pip
-  "$VENV_DIR/bin/pip" install -e "$ROOT_DIR"
+  "$VENV_DIR/bin/python" -m pip install --no-cache-dir "$ROOT_DIR"
 
-  if [[ "$RUN_SETUP" == "1" ]]; then
+  mkdir -p "$BIN_DIR"
+  install -m 755 "$ROOT_DIR/uninstall.py" "$INSTALL_DIR/uninstall.py"
+  ln -sfn "$VENV_DIR/bin/shruti" "$BIN_DIR/shruti"
+  ln -sfn "$INSTALL_DIR/uninstall.py" "$BIN_DIR/shruti-uninstall"
+
+  log "[shruti] Installed: $BIN_DIR/shruti"
+  log "[shruti] Uninstall: $BIN_DIR/shruti-uninstall [--purge]"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) log '[shruti] Add ~/.local/bin to your shell PATH: export PATH="$HOME/.local/bin:$PATH"' ;;
+  esac
+
+  if [[ "$RUN_SETUP" == "1" ]] && ( : </dev/tty ) 2>/dev/null; then
     log "[shruti] Running interactive setup..."
-    "$VENV_DIR/bin/shruti" setup
-    echo "[shruti] Install complete."
+    # stdin may contain this installer when invoked through curl | bash.
+    "$BIN_DIR/shruti" setup </dev/tty
   else
-    echo "[shruti] Install complete. Run: $VENV_DIR/bin/shruti setup"
+    log "[shruti] Run setup from a desktop terminal: $BIN_DIR/shruti setup"
   fi
 }
 

@@ -6,6 +6,7 @@ import getpass
 import os
 import re
 import signal
+import shlex
 import subprocess
 import sys
 import threading
@@ -163,7 +164,7 @@ def _gsettings_set_string(schema: str, key: str, value: str) -> None:
 
 def _configure_gnome_hotkey(shruti_exe: Path, hotkey: str) -> tuple[bool, str]:
     accel = _hotkey_to_gnome_accelerator(hotkey)
-    cmd = f"{shruti_exe} oneshot"
+    cmd = f"{shlex.quote(str(shruti_exe))} oneshot"
 
     bindings = _gsettings_get_custom_bindings()
     if GNOME_BINDING_PATH not in bindings:
@@ -217,7 +218,10 @@ def cmd_setup(_args: argparse.Namespace) -> int:
     save_config(updated)
     save_api_key(api_key)
 
-    ok, msg = _configure_hotkey_trigger(Path(sys.argv[0]).resolve(), updated.hotkey)
+    # Keep the shortcut independent of the source checkout and venv internals.
+    installed_exe = Path.home() / ".local" / "bin" / "shruti"
+    shruti_exe = installed_exe if installed_exe.is_file() else Path(sys.argv[0]).absolute()
+    ok, msg = _configure_hotkey_trigger(shruti_exe, updated.hotkey)
 
     print("\nSetup complete.")
     print(f"Hotkey: {updated.hotkey} (press once to start, again to stop)")
